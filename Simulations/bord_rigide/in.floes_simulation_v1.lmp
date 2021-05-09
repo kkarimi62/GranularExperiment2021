@@ -1,0 +1,70 @@
+print " "
+print "### Simulation de milieux granulaire ###"
+print " "
+print "## Initialisation -------------------------------------------------------------------------------------------- ##"
+print " "
+    include in.floes_initialisation_v1.lmp # initialise la simulation
+
+print " "
+print "## Depot des grains ------------------------------------------------------------------------------------------ ##"
+print " " 
+    include     in.floes_pour_v1.lmp # dépose des sphères dans la boite de simulation
+    
+    set         group all density/disc 1.0 # densité des particules = 1 (longueur^3)
+    
+print " " 
+print "## Compression echantillon ----------------------------------------------------------------------------------- ##"
+print " "   
+# Unfix - retire les propriétés fixés dans le module précedent pour en fixer de nouvelles dans le module suivant
+    unfix       2Dsimu 
+    unfix       paroiy # enlève les propriétés mécanique des paroies
+    unfix       depot # annule le dépot des grains dmin 
+    unfix       gravite # annule l'effet de la gravité 
+    unfix       calcul_v_m # annule l'intégration temporel des grains
+
+# Undump - arrête les affichages
+    #undump      depot_grain
+
+# Compression de l'assemblage granulaire 
+    include     in.floes_compression_force_v1.lmp # compression uniaxial de l'échantillon par application de force
+
+print " "
+print "## Relaxation de l'echantillon ------------------------------------------------------------------------------- ##"
+print " "
+# Unfix
+    unfix       2Dsimu
+    unfix       temp_cste # annule le thermostat à la fin du dépot des grains
+    unfix       comp_biax # termine la compression bixiale de l'échantillon
+    unfix       calcul_v_m
+    unfix       sur_amortissement
+    
+# Uncompute - efface un calcul pour pouvoir appeler la fonction plus tard
+    uncompute   voisin
+    uncompute   moy_voisin
+
+# Undump - arrête les affichages
+    #undump      compression
+    #undump      compression_img
+
+# Relaxation de l'échantillon 
+    include     in.floes_relaxation_v1.lmp # seconde relaxation l'échantillon après compression
+    
+print " " 
+print "## Cisaillement de l'echantillon ----------------------------------------------------------------------------- ##"
+print " "
+# Unfix
+    unfix       2Dsimu
+    unfix       temp_cste
+    unfix       relaxation # arrête la relaxation de l'échantillon
+    unfix       calcul_v_m
+
+# Uncompute - efface un calcul pour pouvoir appeler la fonction plus tard
+    uncompute   voisin
+    uncompute   moy_voisin
+    
+# Undump - arrête les affichages
+    #undump      relaxation
+
+    include     in.floes_shearing_v1.lmp # cisaille l'échantillon a vitesse constante et sous force constante
+
+#fin du programme

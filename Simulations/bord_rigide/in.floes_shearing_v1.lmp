@@ -1,0 +1,153 @@
+### Compression unixial de matériaux granulaires ###
+    
+## Création des groupes ------------------------------------------------------------------------------------------------------- ##
+    
+# Calcul du diamètre des grains 
+    # Ce bloc s'assure que la valeur calcul est bien actualisée 
+    compute      dgrain all property/atom diameter # calcul le diamètre des grains -> output = scalaire / grain
+    compute      scal_dgrain all reduce ave c_dgrain # calcul du diamètre moyen des particules 
+    thermo_style custom step pxx pyy pxy c_scal_dgrain # modification de l'affichage 
+    run          0
+    
+# Stockage des grains par groupe de taille 
+    variable     d_min atom "c_dgrain == 3.0" 
+    group        dgrain_min variable d_min # place tout les grains d = dmin dans ce groupe
+    variable     d_max atom "c_dgrain == 4.0"
+    group        dgrain_max variable d_max # place tout les grains d = dmax dans ce groupe
+
+# Création des bords 
+    # Crée les groupes des limites supérieur et inférieur celon Oy
+    group        limite_yh region limite_sup 
+    group        limite_yb region limite_inf
+    group        limite_y union limite_yb limite_yh
+    
+    # Crée le groupe des floes cisaillés
+    group        floes subtract all limite_y
+    
+    # Crée le groupe par taille de grains 
+    group        dfloes_min subtract floes dgrain_max
+    group        dfloes_max subtract floes dgrain_min
+
+## Modification de la simulation ------------------------------------------------------------------------------------------------ ##
+
+# Affichage du bord rigide d'une couleur différente
+    set          group limite_y type 2
+
+# Modification des conditions aux limites
+    change_box   all boundary p s p remap units box # changement conditions aux limites et modification agencement grain 
+    set          group all image NULL NULL NULL # repositionne les grains avec les nouvelles conditions aux limites
+
+## Ajout de la friction grain/grain grain/mur mur/grain ------------------------------------------------------------------------- ##
+
+    pair_style   gran/hooke/history 2E7 1E7 2E4 2E4 0.5 0 # contact Hookien entre particule sans friction
+    pair_coeff	 * * 
+    
+    # Definition des contacts paroi/grains
+    fix          paroiy floes wall/gran hooke/history 2E7 1E7 2E4 2E4 0.5 0 &
+                 yplane 0 NULL
+
+## Création des variables ------------------------------------------------------------------------------------------------------- ##
+
+    variable     vx_piston equal vcm(limite_yh,x) # crée une variable de controle de la vitesse pour la simulation
+    variable     cisaillement equal 1 # vitesse de cisaillement imposée 
+    variable     relax_force loop 500 # relaxation tout les 500 pas de temps
+    variable     force_comp equal -1800 # force de compression initial utilisée
+    variable     nvforce_comp equal v_force_comp # initialisation de la variable nvforce_comp pour la boucle de controle 
+    variable     comp_floes equal 1E3 # valeur cible de pression sur appliquée par le piston 
+
+## Cisaillement de l'échantillon ------------------------------------------------------------------------------------------------ ##
+    
+    # Force appliqué sur le système
+    fix          sur_amortissement all viscous 1.0 # ajout d'une force visqueuse dans l'échantillon  
+    fix          paroie_sup limite_yh setforce 0.0 0.0 0.0 # fixe la paroie supérieur en prenant fx = fy = fz = 0.0
+    fix          paroie_inf limite_yb setforce 0.0 0.0 0.0 # fixe la paroie inferieur en prenant fx = fy = fz = 0 
+    
+    # Début de simulation
+    timestep     1E-5 # Pas de temps de la simulation
+    
+    fix          temp_cste floes temp/berendsen 0.0 0.0 100 # définie une température constante durant la simulation
+   
+    # Definition du cisaillement par vitesse contante imposée sur la limite supérieur v = v_cisaillement
+    velocity     limite_yh set v_cisaillement NULL NULL sum no units box 
+
+    # Force appliquée sur le système
+    #if           "${relax_force} == 200" then "force_comp == 0.0" & "relax_force == 0" &
+    #else         "next relax_force"
+    #fix          compression limite_yh addforce 0.0 v_force_comp 0.0
+    #variable     force_comp equal -5E-1
+    
+    # Boucle de controle de la pression de compression
+    compute      sxx_grain limite_yh stress/atom NULL virial # calcul de la pression appliqué 
+    compute      sxx limite_yh reduce sum c_sxx_grain[*]
+    variable     pression equal c_sxx[1]
+    thermo_style custom step c_sxx[1] c_sxx[2] c_sxx[4] # modification de l'affichage 
+    run 0
+    
+    # boucle de controle ajustant la force appliquée par rapport à la contrainte cible
+    if           "${pression} > ${comp_floes}" then "variable nvforce_comp equal ${force_comp}/1.2" & 
+                 "variable force_comp equal v_nvforce_comp" &
+    elif         "${pression} < ${comp_floes}" & 
+                 "variable nvforce_comp equal ${force_comp}*1.2" & 
+                 "variable force_comp equal v_nvforce_comp" 
+    fix          compression limite_yh addforce 0.0 v_force_comp 0.0
+    
+    fix          piston limite_yh rigid single # crée une couche de grain rigide
+    
+    fix          calcul_v_m floes nve/sphere disc # calcul vélocité et moment angulaire de chaque sphère
+     
+    fix          2Dsimu all enforce2d # assure une simulation 2D en annulant les forces/vitesse dans la direction z
+    
+## Calculs ----------------------------------------------------------------------------------------------------------------------- ## 
+ 
+    # Calcul des voisins
+    compute      voisin floes contact/atom # calcul les voisins situé à d = dmin du centre d'un grain
+    compute      moy_voisin floes reduce ave c_voisin # moyenne du nombres de voisins 
+    
+    # Calcul des contraintes du bord rigide supérieur
+    compute      sigma limite_yh stress/atom NULL virial # calcul les contraintes sur le bord rigide cisaillant
+    compute      moy_sigma limite_yh reduce sum c_sigma[*] # somme le tenseur de contrainte sur l'ensemble des atome du bord rigide
+    
+    # Calcul des contraintes dans les floes 
+    compute      sigma_floes floes stress/atom NULL virial # calcul les contraintes dans les floes 
+    compute      moy_sigma_floes floes reduce sum c_sigma_floes[*] # somme le tenseur de contrainte sur l'ensemble des floes
+    
+    # Déplacement des grains et des bords rigides
+    compute      u_bordsup limite_yh displace/atom
+    compute      u_bordinf limite_yb displace/atom
+    compute      u_floes floes displace/atom
+    
+    compute      u_moy_bordsup limite_yh reduce ave c_u_bordsup[*][*]
+    compute      u_moy_bordinf limite_yb reduce ave c_u_bordinf[*][*]
+    compute      u_moy_floes floes reduce ave c_u_floes[*][*]
+
+## Commande-d'affichage ---------------------------------------------------------------------------------------------------------- ## 
+
+    thermo       1000 # affichage tout les 1000 pas de temps
+    
+    # affichage des données du probleme
+    thermo_style custom & 
+                 step atoms temp press & 
+                 c_moy_voisin density &
+                 lx ly & 
+                 c_moy_sigma_floes[1] c_moy_sigma_floes[2] c_moy_sigma_floes[4] & 
+                 c_moy_sigma[1] c_moy_sigma[2] c_moy_sigma[4] &
+                 c_u_moy_bordsup[1] c_u_moy_bordsup[2] & 
+                 c_u_moy_bordinf[1] c_u_moy_bordinf[2] & 
+                 c_u_moy_floes[1] c_u_moy_floes[2]
+                
+    # Sorties graphiques
+    #dump		 cisaillement_img all image 10000 cisaillement.*.jpg type type &
+    #             zoom 1.6 adiam 4.0
+    #dump_modify	 cisaillement_img pad 5
+    
+    #dump         evo_voisin floes custom 1000 voisin.txt id c_voisin # affiche le nombre de voisin / grain dans un fichier texte pour d = dmin
+    
+	#dump         shearing all movie 500 shearing.avi type type &
+    #             zoom 1.6 adiam 4.0 # crée une vidéo du cisaillement
+	#dump_modify  shearing pad 5
+
+## Fin du cisaillement ------------------------------------------------------------------------------------------------------------ ##
+    
+	run          250000 #  250 000 pas de simulations effectués
+    
+#fin du programme
